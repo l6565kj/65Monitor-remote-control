@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>六五远程协助</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            position: relative;
+            overflow: hidden;
+            background-color: #333;
+        }
+        #video {
+            flex: 1;
+            width: 100%;
+            height: auto;
+            max-height: calc(100vh - 40px);
+            object-fit: contain;
+            display: block;
+            user-select: none; /* 禁止选择 */
+            -webkit-user-drag: none; /* 禁止拖动 */
+        }
+        #footer {
+            height: 28px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #303030;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            position: relative;
+            z-index: 1;
+            margin-top: auto;
+        }
+        #status, #resolution, #coordinates {
+            font-size: 1em; /* 调整字体大小以适应手机屏幕 */
+            color: white;
+        }
+        #mosaic {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            font-size: 2em; /* 调整字体大小 */
+            color: white;
+            z-index: 2;
+        }
+        #warning, #signalLost {
+            display: none;
+        }
+        
+        /* 媒体查询，用于小屏幕 */
+        @media (max-width: 600px) {
+            #footer {
+                height: 50px; /* 调整页脚高度 */
+                padding: 0 5px; /* 减少内边距 */
+            }
+            #status, #resolution, #coordinates {
+                font-size: 0.9em; /* 进一步减小字体 */
+            }
+            #mosaic {
+                font-size: 1.5em; /* 调整警告信息的字体大小 */
+            }
+        }
+    </style>
+</head>
+<body>
+    <img id="video" src="/6565TECH" alt="视频流" />
+    <div id="footer">
+        <div>六五屏幕扩展-视频流</div>
+        <div id="status">连接中...</div>
+        <div id="resolution">远程显示器分辨率：获取中...</div>
+        <div id="coordinates">坐标: (0, 0)</div> <!-- 显示鼠标坐标 -->
+    </div>
+    <div id="mosaic">
+        <div id="warning">WARNING: Transmission signal lost</div>
+        <div id="signalLost">信号丢失</div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const resolution = document.getElementById('resolution');
+        const coordinates = document.getElementById('coordinates');
+        const mosaic = document.getElementById('mosaic');
+        const warningMessage = document.getElementById('warning');
+        const signalLostMessage = document.getElementById('signalLost');
+        let isConnected = true;
+        let flashInterval;
+        const TIMEOUT_DURATION = 3000;
+
+        // 初始化远程显示器分辨率
+        let remoteScreenWidth = 1920;
+        let remoteScreenHeight = 1080;
+
+        // 禁止鼠标拖动视频流画面
+        video.addEventListener('dragstart', function(event) {
+            event.preventDefault();
+        });
+
+        // 禁用右键点击
+        video.addEventListener('contextmenu', function(event) {
+            event.preventDefault();
+        });
+
+        // 获取远程显示器分辨率
+        function fetchResolution() {
+            const url = `${window.location.protocol}//${window.location.hostname}:9383/resolution`;
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    remoteScreenWidth = data.width;
+                    remoteScreenHeight = data.height;
+                    resolution.style.color = '#303030';
+                    resolution.textContent = `远程显示器分辨率：${remoteScreenWidth} x ${remoteScreenHeight}`;
+                })
+                .catch(() => {
+                    resolution.textContent = '远程显示器分辨率：获取失败';
+                });
+        }
+
+        // Debounce function
+        function debounce(func, delay) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => {
+                    func.apply(this, args);
+                }, delay);
+            };
+        }
+
+        // 发送鼠标位置到后端
+        function sendMousePosition(x, y) {
+            const url = `${window.location.protocol}//${window.location.hostname}:9383/move_mouse`;
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ x: x, y: y })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log(`Mouse moved to: (${data.x}, ${data.y})`);
+            })
+            .catch(error => {
+                console.error('Error sending mouse position:', error);
+            });
+        }
+
+        // 发送鼠标请求
+        function sendMouseClick(button) {
+            const url = `${window.location.protocol}//${window.location.hostname}:9383/press_key_or_mouse`;
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ button: button })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log(`Key pressed: ${data.button}`);
+            })
+            .catch(error => {
+                console.error('Error sending key press:', error);
+            });
+        }
+
+        // 发送键盘按键请求
+        function sendKeyPress(key) {
+            const url = `${window.location.protocol}//${window.location.hostname}:9383/press_key_or_mouse`;
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ key: key })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log(`Key pressed: ${data.key}`);
+            })
+            .catch(error => {
+                console.error('Error sending key press:', error);
+            });
+        }
+
+        // 添加鼠标移动事件，使用 debounce
+        const debouncedSendMousePosition = debounce(sendMousePosition, 300); // 300毫秒的延迟
+
+        // 显示鼠标在视频流中的坐标并转换为远程屏幕的坐标
+        video.addEventListener('mousemove', function(event) {
+            const rect = video.getBoundingClientRect(); // 获取视频显示区域的位置和尺寸
+            const videoAspectRatio = video.naturalWidth / video.naturalHeight; // 视频的原始宽高比
+            const containerAspectRatio = rect.width / rect.height; // 视频容器的宽高比
+
+            let videoWidth, videoHeight, videoXOffset, videoYOffset;
+
+            // 根据容器宽高比和视频宽高比来调整视频在容器中的显示区域
+            if (containerAspectRatio > videoAspectRatio) {
+                // 容器更宽，视频高度占满，宽度居中
+                videoHeight = rect.height;
+                videoWidth = videoHeight * videoAspectRatio;
+                videoXOffset = (rect.width - videoWidth) / 2;
+                videoYOffset = 0;
+            } else {
+                // 容器更高，视频宽度占满，高度居中
+                videoWidth = rect.width;
+                videoHeight = videoWidth / videoAspectRatio;
+                videoXOffset = 0;
+                videoYOffset = (rect.height - videoHeight) / 2;
+            }
+
+            const mouseX = event.clientX - rect.left; // 鼠标相对于视频容器的X坐标
+            const mouseY = event.clientY - rect.top;  // 鼠标相对于视频容器的Y坐标
+
+            // 检查鼠标是否在视频显示区域内
+            if (
+                mouseX >= videoXOffset &&
+                mouseX <= videoXOffset + videoWidth &&
+                mouseY >= videoYOffset &&
+                mouseY <= videoYOffset + videoHeight
+            ) {
+                // 计算鼠标在视频实际画面中的相对位置
+                const videoRelativeX = (mouseX - videoXOffset) / videoWidth * video.naturalWidth;
+                const videoRelativeY = (mouseY - videoYOffset) / videoHeight * video.naturalHeight;
+
+                // 将本地视频坐标映射到远程屏幕分辨率的坐标
+                const remoteX = Math.round(videoRelativeX / video.naturalWidth * remoteScreenWidth);
+                const remoteY = Math.round(videoRelativeY / video.naturalHeight * remoteScreenHeight);
+
+                // 显示坐标信息
+                coordinates.textContent = `指针: (${remoteX}, ${remoteY})`;
+                coordinates.style.color = '#303030';
+
+                // 发送鼠标位置，使用防抖函数
+                debouncedSendMousePosition(remoteX, remoteY);
+            } else {
+                coordinates.textContent = `坐标: (超出操作区)`;
+            }
+        });
+
+        // 视频流错误事件
+        video.addEventListener('error', handleDisconnection);
+
+        // 监听鼠标点击事件
+        video.addEventListener('click', function(event) {
+            // 模拟左键点击
+            sendMouseClick("left"); 
+        });
+
+        // 监听右键点击事件
+        video.addEventListener('contextmenu', function(event) {
+            event.preventDefault(); // 防止默认右键菜单
+            // 模拟右键点击
+            sendMouseClick("right");
+        });
+
+  // 节流函数
+function throttle(func, limit) {
+    let lastFunc;
+    let lastRan;
+
+    return function(...args) {
+        const context = this;
+        if (!lastRan) {
+            func.apply(context, args);
+            lastRan = Date.now();
+        } else {
+            clearTimeout(lastFunc);
+            lastFunc = setTimeout(function() {
+                if ((Date.now() - lastRan) >= limit) {
+                    func.apply(context, args);
+                    lastRan = Date.now();
+                }
+            }, limit - (Date.now() - lastRan));
+        }
+    };
+}
+
+// 监听鼠标滚轮事件
+video.addEventListener('wheel', throttle(function(event) {
+    event.preventDefault(); // 防止默认滚动行为
+    const direction = event.deltaY < 0 ? "up" : "down"; // 判断滚轮方向
+    sendKeyPress(direction); // 发送滚轮方向
+}, 500)); // 500毫秒的节流时间
+
+
+        // 监听键盘事件
+        window.addEventListener('keydown', function(event) {
+            let key;
+            if (event.ctrlKey) {
+                key = `ctrl+${event.key}`;
+            } else if (event.shiftKey) {
+                key = `shift+${event.key}`;
+            } else if (event.altKey) {
+                key = `alt+${event.key}`;
+            } else {
+                key = event.key;
+            }
+
+            // 发送键盘按键请求
+            sendKeyPress(key);
+        });
+
+        function checkConnection() {
+            const url = `${window.location.protocol}//${window.location.hostname}:9383/Signal`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+            }, TIMEOUT_DURATION);
+
+            fetch(url, { signal: controller.signal })
+                .then(response => response.text())
+                .then(data => {
+                    clearTimeout(timeoutId);
+                    if (data.trim() === 'Connected') {
+                        if (!isConnected) {
+                            video.src = '/6565TECH';
+                            video.play();
+                            mosaic.style.display = 'none';
+                            clearInterval(flashInterval);
+                            warningMessage.style.display = 'none';
+                            signalLostMessage.style.display = 'none';
+                        }
+                        status.textContent = '连接正常';
+                        status.style.color = '#0080008a';
+                        isConnected = true;
+                    } else {
+                        handleDisconnection();
+                    }
+                })
+                .catch(() => {
+                    handleDisconnection();
+                });
+        }
+
+        function handleDisconnection() {
+            if (isConnected) {
+                mosaic.style.display = 'flex';
+                isConnected = false;
+
+                flashInterval = setInterval(() => {
+                    if (warningMessage.style.display === 'none') {
+                        warningMessage.style.display = 'block';
+                        signalLostMessage.style.display = 'none';
+                    } else {
+                        warningMessage.style.display = 'none';
+                        signalLostMessage.style.display = 'block';
+                    }
+                }, 1000);
+
+                status.textContent = '连接失败，信号丢失...';
+                status.style.color = 'red';
+
+                setTimeout(() => {
+                    location.reload();
+                }, 5000);
+            }
+        }
+
+        setInterval(checkConnection, 1000); // 每1秒检查一次连接
+        setInterval(fetchResolution, 5000); // 每5秒获取一次分辨率
+    </script>
+</body>
+</html>
